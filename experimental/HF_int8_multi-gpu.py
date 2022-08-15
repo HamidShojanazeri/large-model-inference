@@ -44,7 +44,7 @@ model_int8 = AutoModelForCausalLM.from_pretrained(
 # )
 
 end_loading = time.time()
-print( " model load time is  {} ms ".format((end_loading-start_loading)) )
+print( " model load time is  {} s ".format((end_loading-start_loading)) )
 
 ##### memory foot print on all devices
 
@@ -54,16 +54,19 @@ for device in range(devices_list):
   gpu = "cuda:"+ str(device)
   print( f" memory reserved on device {gpu} is {torch.cuda.mem_get_info(device=gpu)}")
 
+inference_latency = []
 
+for i in range(10):
+  start_inference = time.time()
 
-start_inference = time.time()
-
-generated_ids = model_int8.generate(input_ids, max_length=MAX_NEW_TOKENS)
+  generated_ids = model_int8.generate(input_ids, max_length=MAX_NEW_TOKENS)
 # generated_ids = model_native.generate(input_ids, max_length=MAX_NEW_TOKENS)
-stop_inference = time.time()
+  stop_inference = time.time()
+  inference_latency.append(stop_inference-start_inference)
 
 print(tokenizer.decode(generated_ids[0], skip_special_tokens=True))
-print( " time for inference is {}s ".format((stop_inference-start_inference)) )
+avg_inference_latency = sum(inference_latency)/len(inference_latency)
+print( " Avg time for inference is {}s ".format((avg_inference_latency)) )
 
 # mem_fp16 = model_native.get_memory_footprint()
 # mem_int8 = model_int8.get_memory_footprint()
