@@ -1,6 +1,7 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import time
+import deepspeed
 
 gigabyte_size = 1073741824
 
@@ -14,7 +15,6 @@ def format_to_gb(item, precision=4):
 MAX_NEW_TOKENS = 128
 # model_name = 'facebook/opt-66b'
 model_name = "bigscience/bloom-3b"
-# model_name = "bigscience/bloom-3b"
 
 text = """
 Q: On average Joe throws 25 punches per minute. A fight lasts 5 rounds of 3 minutes.
@@ -30,24 +30,30 @@ n_gpus = torch.cuda.device_count()
 max_memory = {i: max_memory for i in range(n_gpus)}
 start_loading = time.time()
 
-model_int8 = AutoModelForCausalLM.from_pretrained(
-  model_name,
-  device_map='auto',
-  load_in_8bit=True,
-  max_memory=max_memory
-)
-
-# model_native = AutoModelForCausalLM.from_pretrained(
+# model_int8 = AutoModelForCausalLM.from_pretrained(
 #   model_name,
 #   device_map='auto',
-#   max_memory=max_memory,
-#   torch_dtype="auto"
+#   load_in_8bit=True,
+#   max_memory=max_memory
 # )
+
+model = AutoModelForCausalLM.from_pretrained(
+  model_name
+)
 
 end_loading = time.time()
 print( " model load time is  {} s ".format((end_loading-start_loading)) )
 
 ##### memory foot print on all devices
+
+ds_engine = deepspeed.init_inference(model,
+                                 mp_size=8,
+                                 dtype=torch.half,
+                                 checkpoint=None,
+                                 replace_method='auto',
+                                 replace_with_kernel_inject=True)
+
+model = ds_engine.module
 
 devices_list = torch.cuda.device_count()
 
@@ -60,7 +66,7 @@ inference_latency = []
 for i in range(10):
   start_inference = time.time()
 
-  generated_ids = model_int8.generate(input_ids, max_length=MAX_NEW_TOKENS)
+  generated_ids = model.generate(input_ids, max_length=MAX_NEW_TOKENS)
 # generated_ids = model_native.generate(input_ids, max_length=MAX_NEW_TOKENS)
   stop_inference = time.time()
   inference_latency.append(stop_inference-start_inference)
@@ -68,8 +74,3 @@ for i in range(10):
 print(tokenizer.decode(generated_ids[0], skip_special_tokens=True))
 avg_inference_latency = sum(inference_latency)/len(inference_latency)
 print( " Avg time for inference is {}s ".format((avg_inference_latency)) )
-
-# mem_fp16 = model_native.get_memory_footprint()
-# mem_int8 = model_int8.get_memory_footprint()
-# print("int8 model memory foot print is {}".format(format_to_gb(mem_int8)))
-# print("Memory footprint int8 model: {} | Memory footprint fp16 model: {} | Relative difference: {}".format(mem_int8, mem_fp16, mem_fp16/mem_int8))
