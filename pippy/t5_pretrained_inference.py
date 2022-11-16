@@ -24,7 +24,7 @@ from benchmark_utils.benchmark import get_enc_dec_batch, benchmark_cuda_event, b
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 # for generation
-from transformers import T5Tokenizer, T5ForConditionalGeneration
+from transformers import T5Tokenizer, T5ForConditionalGeneration, T5Config
 # from profiling.memory_stats import MemoryStats, format_to_gb
 
 PROFILING_ENABLED = True
@@ -145,7 +145,17 @@ def run_master(pp_ranks, args):
     print("Using schedule:", args.schedule)
 
     device = args.device
-    t5 = AutoModelForSeq2SeqLM.from_pretrained('t5-3b', use_cache=False)
+
+    if args.mode == 'large-cpu':
+        intermediate_device = device
+    else:
+         intermediate_device = None
+
+    #t5_config = T5Config.from_pretrained(args.model_config)
+
+
+    t5 = AutoModelForSeq2SeqLM.from_pretrained('t5-11b', use_cache=False)
+    # t5 = AutoModelForSeq2SeqLM.from_pretrained(t5_config)
     # t5.half()
     t5_config = t5.config
     t5_config.num_layers = args.num_encoder_layers or t5_config.num_layers
@@ -153,12 +163,11 @@ def run_master(pp_ranks, args):
 
 
 
-    # t5_config = T5Config.from_pretrained(args.model_config)
     # t5_config.num_layers = args.num_encoder_layers or t5_config.num_layers
     # t5_config.num_decoder_layers = args.num_decoder_layers or t5_config.num_decoder_layers
-    # t5_config.use_cache = False  # don't output `past_key_values`
-    # t5 = T5ForConditionalGeneration(t5_config)
-    t5.to(device)  # TODO: Delete this after https://github.com/pytorch/PiPPy/issues/142
+    t5_config.use_cache = False  # don't output `past_key_values`
+    t5 = T5ForConditionalGeneration(t5_config)
+    # t5.to(device)  # TODO: Delete this after https://github.com/pytorch/PiPPy/issues/142
     t5.eval()
     memory_reserved = format_to_gb(torch.cuda.memory_reserved())
     memory_allocated = format_to_gb(torch.cuda.memory_allocated())
@@ -179,8 +188,8 @@ def run_master(pp_ranks, args):
         split_policy = split_into_equal_size(number_of_workers)
 
     all_worker_ranks = pp_ranks[pippy.utils.exclude_master:pippy.utils.exclude_master + number_of_workers]
-    # chunks = args.chunks or len(all_worker_ranks)
-    chunks = len(all_worker_ranks)
+    chunks = args.chunks or len(all_worker_ranks)
+    # chunks = len(all_worker_ranks)
     bs = args.batch_size * chunks
     seq_length = args.seq_length
 
@@ -199,7 +208,8 @@ def run_master(pp_ranks, args):
     print('Instantiating T5 Pipeline')
 
     t5_pipe = Pipe.from_tracing(t5, MULTI_USE_PARAM_CONFIG, tracer=PiPPyHFTracer(), concrete_args=concrete_args,
-                                output_loss_value_spec=None, split_policy=split_policy)
+                                output_loss_value_spec=None, split_policy=split_policy
+                                )
 
     split_gm_children = list(t5_pipe.split_gm.children())
     # assert number_of_workers == len(
@@ -227,7 +237,9 @@ def run_master(pp_ranks, args):
                                                                all_ranks=all_worker_ranks,
                                                                _debug_mask_minibatches=False,
                                                                _record_mem_dumps=bool(args.record_mem_dumps),
-                                                               checkpoint=bool(args.checkpoint))
+                                                               checkpoint=bool(args.checkpoint),
+                                                                device=intermediate_device
+                                                                )
 
     memory_reserved = format_to_gb(torch.cuda.memory_reserved())
     memory_allocated = format_to_gb(torch.cuda.memory_allocated())
@@ -236,6 +248,17 @@ def run_master(pp_ranks, args):
     print("memory_allocated after model intializaed with pipelines", memory_allocated)
     print("***********************************************")
 
+    print("***********************************************")
+    # for device in range(torch.cuda.device_count()):
+    print(torch.cuda.list_gpu_processes(0))
+    print(torch.cuda.list_gpu_processes(1))
+    print(torch.cuda.list_gpu_processes(2))
+    print(torch.cuda.list_gpu_processes(3))
+    print(torch.cuda.list_gpu_processes(4))
+    print(torch.cuda.list_gpu_processes(5))
+    print(torch.cuda.list_gpu_processes(6))
+    print(torch.cuda.list_gpu_processes(7))
+    print("***********************************************")
 
     this_file_name = os.path.splitext(os.path.basename(__file__))[0]
 
@@ -244,13 +267,13 @@ def run_master(pp_ranks, args):
     for i in range(args.num_batches):
         pipe_driver(**t5_input_dict)
 
-    pipe_visualized_filename = f"{this_file_name}_visualized_{args.rank}.json"
-    batches_events_contexts = []
-    batches = [get_enc_dec_batch(args.batch_size, args.avg_seqlen, args.max_seqlen, args.seqlen_stdev, t5.config.vocab_size, device) for _ in range(args.num_batches)]
-    print("*************** batch size **************", batches[0]["input_ids"].size())
-    t5_time = benchmark_cuda_event(pipe_driver, batches, args.num_batches)
-    benchmark_time_perfcounter(pipe_driver, batches, args.num_batches)
-    logger.info(f"T5 inference time per batch {t5_time}")
+    # pipe_visualized_filename = f"{this_file_name}_visualized_{args.rank}.json"
+    # batches_events_contexts = []
+    # batches = [get_enc_dec_batch(args.batch_size, args.avg_seqlen, args.max_seqlen, args.seqlen_stdev, t5.config.vocab_size, device) for _ in range(args.num_batches)]
+    # print("*************** batch size **************", batches[0]["input_ids"].size())
+    # t5_time = benchmark_cuda_event(pipe_driver, batches, args.num_batches)
+    # benchmark_time_perfcounter(pipe_driver, batches, args.num_batches)
+    # logger.info(f"T5 inference time per batch {t5_time}")
     # memory_stats.stop()
     print('Benchmark is finished')
 
@@ -262,9 +285,9 @@ if __name__ == "__main__":
     parser.add_argument('--master_addr', type=str, default=os.getenv('MASTER_ADDR', 'localhost'))
     parser.add_argument('--master_port', type=str, default=os.getenv('MASTER_PORT', '29500'))
 
-    model_config = os.path.dirname(os.path.realpath(__file__)) + "/" + "t5_3b_config.json"
+    model_config = os.path.dirname(os.path.realpath(__file__)) + "/" + "t5_200m_config.json"
     parser.add_argument('--model_config', type=str, default=model_config)
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument("--chunks", type=int, default=1)
     parser.add_argument('--num_batches', type=int, default=1)
     parser.add_argument('--seq_length', type=int, default=16)
@@ -283,7 +306,9 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint', type=int, default=1, choices=[0, 1])
     parser.add_argument('--pp_group_size', type=int, default=8)
     parser.add_argument('--exclude_master', type=int, default=0, choices=[0, 1])
-    parser.add_argument('--auto_split', type=str, default="threshold")
+    parser.add_argument('--auto_split', type=str, default="equal_size")
+    parser.add_argument('--mode', type=str, default='large-cpu', choices=['small', 'large-cpu'])
+
     args = parser.parse_args()
 
     assert args.world_size % args.pp_group_size == 0
